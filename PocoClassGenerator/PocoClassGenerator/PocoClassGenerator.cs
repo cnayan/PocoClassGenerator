@@ -16,17 +16,15 @@ public enum GeneratorBehavior
 public static partial class PocoClassGenerator
 {
     #region Property
-    private static readonly Dictionary<Type, string> TypeAliases = new Dictionary<Type, string> {
-               { typeof(int), "int" },
-               { typeof(short), "short" },
-               { typeof(byte), "byte" },
-               { typeof(byte[]), "byte[]" },
-               { typeof(long), "long" },
-               { typeof(double), "double" },
-               { typeof(decimal), "decimal" },
-               { typeof(float), "float" },
-               { typeof(bool), "bool" },
-               { typeof(string), "string" }
+    private static readonly HashSet<Type> NullableTypes = new HashSet<Type> {
+               typeof(int),
+               typeof(short),
+               typeof(long),
+               typeof(double),
+               typeof(decimal),
+               typeof(float),
+               typeof(bool),
+               typeof(DateTime)
        };
 
     private static readonly Dictionary<string, string> QuerySqls = new Dictionary<string, string> {
@@ -47,20 +45,21 @@ public static partial class PocoClassGenerator
                {"npgsqlconnection", "select table_name from information_schema.tables where table_type = 'BASE TABLE'" }
        };
 
-
-    private static readonly HashSet<Type> NullableTypes = new HashSet<Type> {
-               typeof(int),
-               typeof(short),
-               typeof(long),
-               typeof(double),
-               typeof(decimal),
-               typeof(float),
-               typeof(bool),
-               typeof(DateTime)
+    private static readonly Dictionary<Type, string> TypeAliases = new Dictionary<Type, string> {
+               { typeof(int), "int" },
+               { typeof(short), "short" },
+               { typeof(byte), "byte" },
+               { typeof(byte[]), "byte[]" },
+               { typeof(long), "long" },
+               { typeof(double), "double" },
+               { typeof(decimal), "decimal" },
+               { typeof(float), "float" },
+               { typeof(bool), "bool" },
+               { typeof(string), "string" }
        };
     #endregion
 
-    public static string GenerateAllTables(this System.Data.Common.DbConnection connection, GeneratorBehavior generatorBehavior = GeneratorBehavior.Default)
+    public static string GenerateAllTables(this System.Data.Common.DbConnection connection, GeneratorBehavior generatorBehavior = GeneratorBehavior.Default, string namespace_ = "Models")
     {
         if (connection.State != ConnectionState.Open) connection.Open();
 
@@ -75,7 +74,9 @@ public static partial class PocoClassGenerator
         }
 
         var sb = new StringBuilder();
-        sb.AppendLine("namespace Models { ");
+        namespace_ = namespace_ ?? "Models";
+        sb.AppendLine($"namespace {namespace_}");
+        sb.AppendLine("{");
         tables.ForEach(table => sb.Append(connection.GenerateClass(
                string.Format(QuerySqls[conneciontName], table), table, generatorBehavior: generatorBehavior
         )));
@@ -104,8 +105,8 @@ public static partial class PocoClassGenerator
             isFromMutiTables = tables.Count() > 1;
 
             if (generatorBehavior.HasFlag(GeneratorBehavior.DapperContrib) && !isFromMutiTables)
-                builder.AppendFormat("	[Dapper.Contrib.Extensions.Table(\"{0}\")]{1}", tableName, Environment.NewLine);
-            builder.AppendFormat("	public class {0}{1}", tableName.Replace(" ", ""), Environment.NewLine);
+                builder.AppendFormat("	[Dapper.Table(\"{0}\")]{1}", tableName, Environment.NewLine);
+            builder.AppendFormat("	public class {0}{1}", GenerateCamelCase(tableName), Environment.NewLine);
             builder.AppendLine("	{");
         }
 
@@ -121,9 +122,14 @@ public static partial class PocoClassGenerator
                 foreach (DataRow row in schema.Rows)
                 {
                     var type = (Type)row["DataType"];
-                    var name = TypeAliases.ContainsKey(type) ? TypeAliases[type] : type.FullName;
+                    var fieldType = TypeAliases.ContainsKey(type) ? TypeAliases[type] : type.FullName;
+                    if (type == typeof(ulong) && Equals(row["ColumnSize"], 1))
+                    {
+                        fieldType = "bool";
+                    }
+
                     var isNullable = (bool)row["AllowDBNull"] && NullableTypes.Contains(type);
-                    var collumnName = (string)row["ColumnName"];
+                    var columnName = (string)row["ColumnName"];
 
                     if (generatorBehavior.HasFlag(GeneratorBehavior.Comment) && !isFromMutiTables)
                     {
@@ -146,14 +152,16 @@ public static partial class PocoClassGenerator
                         var isKey = (bool)row["IsKey"];
                         var isAutoIncrement = (bool)row["IsAutoIncrement"];
                         if (isKey && isAutoIncrement)
-                            builder.AppendLine("		[Dapper.Contrib.Extensions.Key]");
+                            builder.AppendLine("		[Dapper.Key]");
                         if (isKey && !isAutoIncrement)
                             builder.AppendLine("		[Dapper.Contrib.Extensions.ExplicitKey]");
                         if (!isKey && isAutoIncrement)
                             builder.AppendLine("		[Dapper.Contrib.Extensions.Computed]");
                     }
 
-                    builder.AppendLine(string.Format("		public {0}{1} {2} {{ get; set; }}", name, isNullable ? "?" : string.Empty, collumnName));
+                    builder.AppendFormat("{1}		[Dapper.Column(\"{0}\")]{1}", columnName, Environment.NewLine);
+
+                    builder.AppendLine(string.Format("		public {0}{1} {2} {{ get; set; }}", fieldType, isNullable ? "?" : string.Empty, GenerateCamelCase(columnName)));
                 }
 
                 builder.AppendLine("	}");
@@ -164,13 +172,31 @@ public static partial class PocoClassGenerator
         }
     }
 
+    private static string GenerateCamelCase(string text)
+    {
+        text = ToFirstUpper(text);
+        string[] arr = text.Split(' ', '_');
+        if (arr.Length > 0)
+        {
+            text = string.Join(string.Empty, arr.Select(e => ToFirstUpper(e)));
+        }
+
+        return text;
+    }
+
+    private static string ToFirstUpper(string e)
+    {
+        return char.ToUpper(e[0]) + (e.Length > 1 ? e.Substring(1) : string.Empty);
+    }
+
     #region Private
-    private static string[] Split(this string text, string splitText) => text.Split(new[] { splitText }, StringSplitOptions.None);
     private static IDbCommand CreateCommand(this IDbConnection connection, string sql)
     {
         var cmd = connection.CreateCommand();
         cmd.CommandText = sql;
         return cmd;
     }
+
+    private static string[] Split(this string text, string splitText) => text.Split(new[] { splitText }, StringSplitOptions.None);
     #endregion
 }
